@@ -1,7 +1,7 @@
 
 ## Fixed-Wing Simulation Controller Implementation for Scenarios
 
-![Fixed Wing Simulation](image/sim.png.png)
+![Fixed Wing Simulation](image/sim.png)
 
 ### Longitudinal Scenarios
 

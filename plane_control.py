@@ -10,14 +10,30 @@ class LongitudinalAutoPilot(object):
         self.min_throttle = 0.0
         self.max_throttle = 1.0
         self.max_pitch_cmd = 30.0*np.pi/180.0
-        self.max_pitch_cmd2 = 45.0*np.pi/180.0
+        self.max_pitch_cmd2 = 90.0*np.pi/180.0
         
         self.speed_int = 0.0
         self.alt_int = 0.0
         self.climb_speed_int = 0.0
+
+        ## Pitch 
+        self.Kp_pitch = 2.0
+        self.Kp_q = 0.5
         
-        
-        
+        ## Altitude
+        #self.altitude_int = 0.0
+        self.Kp_alt = 0.03
+        self.Ki_alt = 0.01
+
+        ## airspeed
+        #self.airspeed_int = 0.0
+        self.Kp_speed2 = 0.15
+        self.Ki_speed2 = 0.05
+
+        #self.airspeed_pitch_int = 0.0
+
+
+
         return
     
     
@@ -35,9 +51,14 @@ class LongitudinalAutoPilot(object):
     """
     def pitch_loop(self, pitch, pitch_rate, pitch_cmd):
         elevator_cmd = 0.0
-        # STUDENT CODE HERE
+        error = pitch_cmd - pitch
+
+        #PD Controller
+        u = error * self.Kp_pitch + self.Kp_q * pitch_rate
         
-        
+        ## saturate elevator (-1,1)
+        elevator_cmd = max(-1, min(1, u))
+
         return elevator_cmd
     
     """Used to calculate the pitch command required to maintain the commanded
@@ -53,10 +74,31 @@ class LongitudinalAutoPilot(object):
     """
     def altitude_loop(self, altitude, altitude_cmd, dt):
         pitch_cmd = 0.0
-        # STUDENT CODE HERE
+
+        ## altitude error        
+        alt_err = altitude_cmd - altitude
+
+        ##Integrator update
+        self.alt_int += alt_err * dt
+
+        ## PI controller
+        pitch_cmd_unsat = alt_err * self.Kp_alt +  self.Ki_alt *self.alt_int 
         
-        
-        
+        ## saturate pitch command
+        pitch_cmd = max(-self.max_pitch_cmd, min(self.max_pitch_cmd, pitch_cmd_unsat))
+
+
+        ## anti windup
+        # If the controller output saturated *and* the error would push it
+        # further into saturation, undo the last integrator update.
+        if pitch_cmd != pitch_cmd_unsat:
+            # Saturated high and error wants to go higher → undo integration
+            if pitch_cmd == self.max_pitch_cmd and alt_err > 0:
+                self.altitude_int -= alt_err * dt
+            # Saturated low and error wants to go lower → undo integration
+            elif pitch_cmd == -self.max_pitch_cmd and alt_err <0:
+                self.altitude_int -= alt_err * dt
+                
         return pitch_cmd
     
 
@@ -73,9 +115,17 @@ class LongitudinalAutoPilot(object):
     """
     def airspeed_loop(self, airspeed, airspeed_cmd, dt):        
         throttle_cmd = 0.0
-        # STUDENT CODE HERE
         
+        air_err = airspeed_cmd - airspeed
+
+        ## Accumulated error
+        self.speed_int += air_err * dt
+        #PI controller
+
+        u = self.Kp_speed2 * air_err + self.Ki_speed2 * self.speed_int
         
+        throttle_cmd = max(0, min(1, u))
+
         return throttle_cmd
     """Used to calculate the pitch command required to maintain the commanded
     airspeed
@@ -90,9 +140,18 @@ class LongitudinalAutoPilot(object):
     """
     def airspeed_pitch_loop(self, airspeed, airspeed_cmd, dt):
         pitch_cmd = 0.0
-        # STUDENT CODE HERE
-        
-        
+
+        err = airspeed - airspeed_cmd 
+        self.climb_speed_int += err * dt
+        u = err * self.Kp_speed2 + self.climb_speed_int * self.Ki_speed2
+
+        pitch_cmd =  max(-self.max_pitch_cmd2,min(self.max_pitch_cmd2,u))
+        #anti windup
+        if pitch_cmd != u:
+            if pitch_cmd == self.max_pitch_cmd2 and err>0:
+                self.climb_speed_int -=err * dt
+            elif pitch_cmd == -self.max_pitch_cmd2 and err<0:
+                self.climb_speed_int -= err * dt
         return pitch_cmd
     
     """Used to calculate the pitch command and throttle command based on the
@@ -114,8 +173,9 @@ class LongitudinalAutoPilot(object):
         pitch_cmd = 0.0
         throttle_cmd = 0.0
         # STUDENT CODE HERE
-        
-        
+        throttle_cmd =  self.airspeed_loop(airspeed,airspeed_cmd,dt)
+        pitch_cmd = self.altitude_loop(altitude,altitude_cmd, dt)    
+    
         return[pitch_cmd, throttle_cmd]
 
 
@@ -130,6 +190,21 @@ class LateralAutoPilot:
         self.max_roll = 60*np.pi/180.0
         self.state = 1
 
+        #altitudeSwitch:0
+        ## Roll Stabilization
+        self.Kp_roll = 1.0
+        self.Kp_p=0.0
+
+        self.Kp_yaw= 2.0
+        self.Ki_yaw= 0.2
+
+        self.Kp_sideslip= 3.0
+        self.Ki_sideslip= 0.1
+        
+        self.Kp_xTrack=1.0
+        self.Kp_orbit= 50.0
+
+        self.chi_inf = 60.0*np.pi/180.0
 
 
     """Used to calculate the commanded aileron based on the roll error
@@ -149,9 +224,11 @@ class LateralAutoPilot:
                                 roll_rate, 
                                 T_s = 0.0):
         aileron = 0
-        # STUDENT CODE HERE
-        
-        
+        ## PD controller
+        err = phi_cmd - phi
+        u = self.Kp_roll * err - self.Kp_p * roll_rate
+
+        aileron = max(-1, min(1, u))
         
         return aileron
 
@@ -172,9 +249,12 @@ class LateralAutoPilot:
                          T_s,
                          roll_ff=0):
         roll_cmd = 0
-        
-        # STUDENT CODE HERE
-        
+        ##PI Conttoller
+        err = yaw_cmd - yaw 
+        self.integrator_yaw += err * T_s
+        u = err * self.Kp_yaw + err + self.Ki_yaw * self.integrator_yaw
+
+        roll_cmd = max(-self.max_roll, min(self.max_roll,u))
         
         return roll_cmd
 
@@ -192,9 +272,15 @@ class LateralAutoPilot:
                            beta, # sideslip angle 
                            T_s):
         rudder = 0
-        # STUDENT CODE HERE
-        
-        
+        beta_cmd = 0.0 # no sideslip
+        ## PI Controller
+        err = beta - beta_cmd
+        self.integrator_beta += err * T_s
+
+        u = err * self.Kp_sideslip + self.integrator_beta * self.Ki_sideslip
+
+        rudder = max(-1, min(1, u))
+
         return rudder
     
     """Used to calculate the desired course angle based on cross-track error
@@ -211,8 +297,21 @@ class LateralAutoPilot:
     def straight_line_guidance(self, line_origin, line_course, 
                                local_position):
         course_cmd = 0
-        # STUDENT CODE HERE
+        pn, pe = local_position[0], local_position[1]
+        r_n, r_e = line_origin[0], line_origin[1]
+        chi_q = line_course
+
+        ## vector from line origin to aircraft, in intertial frame
+        e_n = pn - r_n
+        e_e = pe - r_e
+
+        e_y = -np.sin(chi_q) * e_n + np.cos(chi_q) * e_e
         
+        # Path-following course command (Beard & McLain straight-line guidance)
+        course_cmd = chi_q - self.chi_inf * (2.0 / PI) * np.arctan(self.Kp_xTrack * e_y)
+        
+        # Wrap to [-pi, pi] for consistency
+        course_cmd = (course_cmd + PI) % (2.0 * PI) - PI
         
         return course_cmd
     
@@ -232,9 +331,27 @@ class LateralAutoPilot:
     def orbit_guidance(self, orbit_center, orbit_radius, local_position, yaw,
                        clockwise = True):
         course_cmd = 0
-        # STUDENT CODE HERE
+        pn, pe = local_position[0], local_position[1]
+        c_n, c_e = orbit_center[0], orbit_center[1]
+
+        # Distance from center 
+        d = np.sqrt((pn - c_n)**2 + (pe - c_e)**2)
+
+        # Angle from center to aircraft
+        chi = np.arctan2(pe - c_e, pn - c_n)  # in radians  
         
-        
+        #Orbit diretion =1 for clockwise, -1 for counterclockwise
+        lam = 1.0 if clockwise else -1.0
+
+        # Normalized radial error
+        e_r = (d - orbit_radius) / orbit_radius
+
+        # Orbit guidance law
+        course_cmd = chi + lam * (PI/2.0 + np.arctan(self.Kp_orbit * e_r))
+
+        # Wrap to [-pi, pi]
+        course_cmd = (course_cmd + PI) % (2.0 * PI) - PI
+
         return course_cmd
 
     """Used to calculate the feedforward roll angle for a constant radius
@@ -249,11 +366,20 @@ class LateralAutoPilot:
             roll_ff: feed-forward roll in radians
     """
     def coordinated_turn_ff(self, speed, radius, cw):
-        
         roll_ff = 0
-        # STUDENT CODE HERE
-        
-        
+
+        # Guard against bad inputs
+        if radius <= 0 or speed <= 0:
+            return 0.0
+
+        # Coordinated turn relationship: v^2 / R = g * tan(phi)
+        # => phi = atan(v^2 / (g * R))
+        phi_mag = np.arctan((speed**2) / (self.g * radius))
+
+        # Clockwise orbit ⇒ right bank (positive roll)
+        # Counter-clockwise orbit ⇒ left bank (negative roll)
+        roll_ff = phi_mag if cw else -phi_mag
+
         return roll_ff
 
     """Used to calculate the desired course angle and feed-forward roll
